@@ -171,6 +171,7 @@ input[type=range]{width:100%;min-height:36px}
       <label class="chk"><input id="remember" type="checkbox"> Remember on this device</label>
       <div class="two"><button id="testBtn">Test connection</button><button id="photoBtn">Try one photo</button></div>
       <input id="photoIn" type="file" accept="image/*" class="sr" tabindex="-1">
+      <div class="hint" id="keyInfo"></div>
       <div class="hint" id="testOut" role="status"></div>
       <label>Model <input id="model" type="text" spellcheck="false"><small>Any Gemini model that reads images.</small></label>
       <div class="warnbox">A key typed into this page stays in this browser only. A key written into the file's code can be read by anyone who opens the file. Never share a copy that holds your key. Restrict the key in Google AI Studio.</div>
@@ -606,6 +607,9 @@ document.addEventListener("visibilitychange", async () => { if (document.visibil
 
 /* ---------- Tests ---------- */
 /* Explains a network failure: the usual cause is that the page was opened inside a preview that blocks the internet. */
+/* Keeps only the characters a Google key can hold. Phones often add spaces, line breaks, quotes or invisible characters when pasting. */
+function cleanKey(v) { return String(v || "").replace(/[^A-Za-z0-9_\-]/g, ""); }
+function keyInfo() { const el = $("keyInfo"); if (el) el.textContent = KEY ? "Key length: " + KEY.length + " characters. Starts " + KEY.slice(0, 4) + ", ends " + KEY.slice(-4) + ". (A Google key is normally 39 characters and starts with AIza.)" : ""; }
 function netDiag() {
   let framed = false; try { framed = window.top !== window.self; } catch (e) { framed = true; }
   if (location.protocol === "file:" || location.origin === "null" || framed || !window.isSecureContext)
@@ -617,7 +621,8 @@ async function testConnection() {
   const out = $("testOut"); if (!KEY) { out.textContent = "Paste your key first."; return; } out.textContent = "Testing...";
   try {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(S.model.replace(/^models\//, "")), { headers: { "x-goog-api-key": KEY } });
-    out.textContent = r.ok ? "Connected. This key can use " + S.model + "." : r.status === 404 ? "The key works, but this model name was not found." : (r.status === 400 || r.status === 401 || r.status === 403) ? "The key was rejected." : "Error " + r.status;
+    let why = ""; if (!r.ok) { try { const j = await r.json(); why = j && j.error ? clean((j.error.status || "") + " " + (j.error.message || ""), 220) : ""; } catch (e) {} }
+    out.textContent = r.ok ? "Connected. This key can use " + S.model + "." : "Google answered " + r.status + ". " + why + (r.status === 404 ? " (The key may be fine, but this model name was not found.)" : "");
   } catch (e) { out.textContent = netDiag() + " (Opened from: " + (location.protocol === "file:" ? "a local file" : location.origin) + ")"; }
 }
 function photoTest(file) {
@@ -653,7 +658,7 @@ function bind() {
   ["speak", "readQ", "tap", "hide", "vib", "snd", "pad"].forEach(k => $(k).addEventListener("change", () => { S[k] = $(k).checked; saveStore(); }));
   $("source").addEventListener("change", () => { S.source = $("source").value; saveStore(); });
   $("strict").addEventListener("change", () => { S.minMatch = parseFloat($("strict").value); S.sure = Math.min(0.95, S.minMatch + 0.15); saveStore(); });
-  $("key").addEventListener("input", () => { KEY = $("key").value.trim(); saveStore(); refreshSteps(); });
+  $("key").addEventListener("input", () => { KEY = cleanKey($("key").value); saveStore(); refreshSteps(); keyInfo(); });
   $("remember").addEventListener("change", () => { S.remember = $("remember").checked; saveStore(); });
   $("model").addEventListener("input", () => { S.model = clean($("model").value, 80) || DEF.model; saveStore(); });
   $("startBtn").addEventListener("click", start); $("stopBtn").addEventListener("click", stop); $("pauseBtn").addEventListener("click", pauseToggle);
@@ -679,7 +684,7 @@ function bind() {
   $("vibNote").textContent = navigator.vibrate ? "This device supports vibration." : IOS_TICK ? "iPhone: uses the Taptic Engine through a Safari switch (iOS 18 or later). Taps are short ticks; strength and length cannot be changed. Press Test in 5 seconds to check it works without touching the screen." : "This device has no web vibration. Turn on the low tone.";
 }
 
-loadStore(); fillForm(); bind(); commitKB(); renderList(); refreshSteps(); idleMain(); updateUsage(); setInterval(updateUsage, 15000);
+loadStore(); KEY = KEY ? cleanKey(KEY) : KEY; fillForm(); bind(); commitKB(); renderList(); refreshSteps(); idleMain(); keyInfo(); updateUsage(); setInterval(updateUsage, 15000);
 if (!window.isSecureContext || location.protocol === "file:") log("warn", "Opened as a local file or preview. The camera and Google will not work. Open the page from its https link in Safari.");
 </script>
 </body>
