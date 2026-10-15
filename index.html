@@ -93,6 +93,7 @@ label small,.hint{font-weight:400;color:var(--muted);font-size:.9rem}
 input[type=text],input[type=password],input[type=number],select,textarea{width:100%;padding:12px;border-radius:12px;border:2px solid var(--line);background:var(--bg)}
 textarea{min-height:90px;resize:vertical}
 input[type=range]{width:100%;min-height:36px}
+#key.shown{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:1.05rem;letter-spacing:.04em}
 .chk{display:flex;gap:12px;align-items:center;font-weight:700}
 .chk input{width:26px;height:26px;flex:none}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -168,6 +169,7 @@ input[type=range]{width:100%;min-height:36px}
       <label>Gemini API key
         <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste key here">
       </label>
+      <label class="chk"><input id="showKey" type="checkbox"> Show the key (to compare it letter by letter)</label>
       <label class="chk"><input id="remember" type="checkbox"> Remember on this device</label>
       <div class="two"><button id="testBtn">Test connection</button><button id="photoBtn">Try one photo</button></div>
       <input id="photoIn" type="file" accept="image/*" class="sr" tabindex="-1">
@@ -193,8 +195,24 @@ input[type=range]{width:100%;min-height:36px}
 
   <div class="pane" id="p-feel" role="tabpanel" hidden>
     <div class="card">
+      <b>How answers reach the patient</b>
+      <label>Output
+        <select id="mode">
+          <option value="tones">Earphones: soft beeps (1 to 4), no voice</option>
+          <option value="both">Earphones: beeps, then a short voice</option>
+          <option value="voice">Earphones: voice only</option>
+          <option value="haptic">Vibration or controller only (silent)</option>
+        </select>
+      </label>
+      <label>Beep pitch (Hz) <small id="pitchV"></small><input id="pitch" type="range" min="200" max="2000" step="50"></label>
+      <label>Volume <small id="volV"></small><input id="volume" type="range" min="0.2" max="1" step="0.05"></label>
+      <div class="two"><button id="beepTest">Test beeps</button><button id="voiceTest">Test voice</button></div>
+      <div class="hint">Hearing aids and earphones often carry 400 to 1500 Hz best. Move the pitch until the patient hears it clearly. If nothing plays on an iPhone, turn the silent switch off, raise the volume, and check the earphones are the selected output.</div>
+    </div>
+    <div class="card">
+      <b>Vibration options</b>
       <label class="chk"><input id="vib" type="checkbox"> Vibrate (main output)</label>
-      <label class="chk"><input id="tap" type="checkbox"> Tap code for numbered choices</label>
+      <label class="chk"><input id="tap" type="checkbox"> Signal code for numbered choices (beeps or taps)</label>
       <div class="two"><label>Tap length (ms)<input id="pulse" type="number" min="60" max="400" step="10"></label>
       <label>Gap between taps (ms)<input id="gap" type="number" min="400" max="2500" step="100"></label></div>
       <div class="two"><label>Soft replays<input id="replays" type="number" min="0" max="3" step="1"></label>
@@ -219,8 +237,6 @@ input[type=range]{width:100%;min-height:36px}
       <label class="chk"><input id="readQ" type="checkbox"> Read the question first</label>
       <label class="chk"><input id="snd" type="checkbox"> Low tone with each tap</label>
       <label>Speech speed <small id="rateV"></small><input id="rate" type="range" min="0.5" max="1.2" step="0.05"></label>
-      <label>Volume <small id="volV"></small><input id="volume" type="range" min="0.2" max="1" step="0.05"></label>
-      <button id="voiceTest">Test voice</button>
     </div>
   </div>
 
@@ -257,8 +273,8 @@ const clean = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f\u007f
 const snip = s => clean(s, 80) || "(unreadable)";
 
 /* ---------- Settings ---------- */
-const DEF = { model: CONFIG.MODEL, remember: true, speak: false, readQ: false, replays: 1, hide: false,
-  rate: 0.85, volume: 1, scale: 1.3, tap: true, vib: true, snd: false, pad: true, padStrength: 1, pulse: 120, gap: 1000, wait: 8,
+const DEF = { model: CONFIG.MODEL, remember: true, mode: "tones", pitch: 600, speak: false, readQ: false, replays: 1, hide: false,
+  rate: 0.85, volume: 1, scale: 1.3, tap: true, vib: false, snd: true, pad: false, padStrength: 1, pulse: 120, gap: 1000, wait: 8,
   source: "camera", minMatch: 0.7, sure: 0.85, settle: 1.2, minGap: 3, heartbeat: 30, maxHour: 150,
   moveThr: 0.03, newThr: 0.06 };
 let S = Object.assign({}, DEF), KEY = CONFIG.API_KEY || "";
@@ -369,15 +385,28 @@ function refreshSteps() {
 
 /* ---------- Haptics, tones, speech ---------- */
 let actx = null, runId = 0, waitTimer = null;
+/* iPhone mutes Web Audio when the silent switch is on, and Bluetooth earphones can clip the first beep. A looping silent clip fixes the first; a near-silent tone keeps the earphone link awake. */
+let silentEl = null, keepOsc = null;
+function silentWav() {
+  const n = 8000, b = new ArrayBuffer(44 + n * 2), v = new DataView(b), w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVEfmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([b], { type: "audio/wav" }));
+}
+function keepAudioAlive() {
+  ensureAudio();
+  try { if (!silentEl) { silentEl = new Audio(silentWav()); silentEl.loop = true; silentEl.setAttribute("playsinline", ""); } silentEl.play().catch(() => {}); } catch (e) {}
+  try { if (actx && !keepOsc) { keepOsc = actx.createOscillator(); const g = actx.createGain(); g.gain.value = 0.00002; keepOsc.frequency.value = 30; keepOsc.connect(g); g.connect(actx.destination); keepOsc.start(); } } catch (e) {}
+}
 function ensureAudio() { try { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) {} }
 function tone(ms, gain) {
+  ms = Math.max(ms, 200);
   return new Promise(res => {
     if (!S.snd || !actx) { res(); return; }
     try {
       const t = actx.currentTime, d = ms / 1000, g = actx.createGain(), v = Math.max(0.001, gain * S.volume);
       g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(v, t + 0.015);
       g.gain.setValueAtTime(v, t + Math.max(0.02, d - 0.03)); g.gain.exponentialRampToValueAtTime(0.0001, t + d); g.connect(actx.destination);
-      [110, 220].forEach((f, i) => { const o = actx.createOscillator(); o.type = "sine"; o.frequency.value = f; const og = actx.createGain(); og.gain.value = i ? 0.35 : 1; o.connect(og); og.connect(g); o.start(t); o.stop(t + d + 0.02); });
+      [S.pitch, S.pitch * 2].forEach((f, i) => { const o = actx.createOscillator(); o.type = "sine"; o.frequency.value = f; const og = actx.createGain(); og.gain.value = i ? 0.2 : 1; o.connect(og); og.connect(g); o.start(t); o.stop(t + d + 0.02); });
     } catch (e) {}
     setTimeout(res, ms);
   });
@@ -575,7 +604,7 @@ function setCam() { $("cam").hidden = !(running && showCam); }
 async function start() {
   if (!KEY) { openSheet("connect"); $("testOut").textContent = "Paste your key first, then press Done and Start."; return; }
   if (!KB.length) { openSheet("questions"); return; }
-  ensureAudio();
+  ensureAudio(); if (S.snd) keepAudioAlive();
   try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
   try {
     stream = S.source === "screen" ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
@@ -644,21 +673,31 @@ function showTab(t) {
   ["connect", "questions", "feel", "more"].forEach(p => $("p-" + p).hidden = p !== t);
   if (t === "questions") renderList(); if (t === "more") updateUsage();
 }
-function labels() { $("padV").textContent = Math.round(S.padStrength * 100) + "%"; $("rateV").textContent = S.rate.toFixed(2) + "x"; $("volV").textContent = Math.round(S.volume * 100) + "%"; $("scaleV").textContent = S.scale.toFixed(1) + "x"; }
+const MODES = { tones: { snd: true, speak: false, vib: false, pad: false }, both: { snd: true, speak: true, vib: false, pad: false },
+  voice: { snd: false, speak: true, vib: false, pad: false }, haptic: { snd: false, speak: false, vib: true, pad: true } };
+function applyMode(m, save) {
+  if (!MODES[m]) m = "tones"; S.mode = m; Object.assign(S, MODES[m]);
+  ["speak", "snd", "vib", "pad"].forEach(k => { if ($(k)) $(k).checked = !!S[k]; });
+  if ($("mode")) $("mode").value = m; if (save) saveStore();
+}
+function labels() { $("pitchV").textContent = S.pitch + " Hz"; $("padV").textContent = Math.round(S.padStrength * 100) + "%"; $("rateV").textContent = S.rate.toFixed(2) + "x"; $("volV").textContent = Math.round(S.volume * 100) + "%"; $("scaleV").textContent = S.scale.toFixed(1) + "x"; }
 function applyScale() { document.documentElement.style.setProperty("--s", S.scale); }
 function fillForm() {
   $("key").value = KEY; $("remember").checked = S.remember; $("model").value = S.model;
   ["speak", "readQ", "tap", "hide", "vib", "snd", "pad"].forEach(k => $(k).checked = !!S[k]);
-  ["rate", "volume", "scale", "pulse", "gap", "wait", "replays", "settle", "minGap", "heartbeat", "maxHour", "padStrength"].forEach(k => $(k).value = S[k]);
-  $("source").value = S.source; $("strict").value = S.minMatch >= 0.8 ? "0.85" : S.minMatch >= 0.6 ? "0.7" : "0.55";
+  ["rate", "volume", "scale", "pulse", "gap", "wait", "replays", "settle", "minGap", "heartbeat", "maxHour", "padStrength", "pitch"].forEach(k => $(k).value = S[k]);
+  $("mode").value = S.mode; $("source").value = S.source; $("strict").value = S.minMatch >= 0.8 ? "0.85" : S.minMatch >= 0.6 ? "0.7" : "0.55";
   labels(); applyScale();
 }
 function bind() {
-  ["rate", "volume", "scale", "pulse", "gap", "wait", "replays", "settle", "minGap", "heartbeat", "maxHour", "padStrength"].forEach(k => $(k).addEventListener("input", () => { const v = parseFloat($(k).value); if (!isNaN(v)) { S[k] = v; saveStore(); labels(); applyScale(); } }));
+  ["rate", "volume", "scale", "pulse", "gap", "wait", "replays", "settle", "minGap", "heartbeat", "maxHour", "padStrength", "pitch"].forEach(k => $(k).addEventListener("input", () => { const v = parseFloat($(k).value); if (!isNaN(v)) { S[k] = v; saveStore(); labels(); applyScale(); } }));
   ["speak", "readQ", "tap", "hide", "vib", "snd", "pad"].forEach(k => $(k).addEventListener("change", () => { S[k] = $(k).checked; saveStore(); }));
+  $("mode").addEventListener("change", () => { applyMode($("mode").value, true); ensureAudio(); if (S.snd) keepAudioAlive(); });
+  $("beepTest").addEventListener("click", async () => { ensureAudio(); if (S.snd) keepAudioAlive(); const was = S.snd; S.snd = true; await playCode(3, 0, ++runId); S.snd = was; });
   $("source").addEventListener("change", () => { S.source = $("source").value; saveStore(); });
   $("strict").addEventListener("change", () => { S.minMatch = parseFloat($("strict").value); S.sure = Math.min(0.95, S.minMatch + 0.15); saveStore(); });
   $("key").addEventListener("input", () => { KEY = cleanKey($("key").value); saveStore(); refreshSteps(); keyInfo(); });
+  $("showKey").addEventListener("change", () => { const on = $("showKey").checked; $("key").type = on ? "text" : "password"; $("key").classList.toggle("shown", on); });
   $("remember").addEventListener("change", () => { S.remember = $("remember").checked; saveStore(); });
   $("model").addEventListener("input", () => { S.model = clean($("model").value, 80) || DEF.model; saveStore(); });
   $("startBtn").addEventListener("click", start); $("stopBtn").addEventListener("click", stop); $("pauseBtn").addEventListener("click", pauseToggle);
@@ -684,7 +723,7 @@ function bind() {
   $("vibNote").textContent = navigator.vibrate ? "This device supports vibration." : IOS_TICK ? "iPhone: uses the Taptic Engine through a Safari switch (iOS 18 or later). Taps are short ticks; strength and length cannot be changed. Press Test in 5 seconds to check it works without touching the screen." : "This device has no web vibration. Turn on the low tone.";
 }
 
-loadStore(); KEY = KEY ? cleanKey(KEY) : KEY; fillForm(); bind(); commitKB(); renderList(); refreshSteps(); idleMain(); keyInfo(); updateUsage(); setInterval(updateUsage, 15000);
+loadStore(); { let hadMode = false; try { hadMode = "mode" in JSON.parse(localStorage.getItem("liveear.v1") || "{}"); } catch (e) {} applyMode(hadMode ? S.mode : "tones", false); } KEY = KEY ? cleanKey(KEY) : KEY; fillForm(); bind(); commitKB(); renderList(); refreshSteps(); idleMain(); keyInfo(); updateUsage(); setInterval(updateUsage, 15000);
 if (!window.isSecureContext || location.protocol === "file:") log("warn", "Opened as a local file or preview. The camera and Google will not work. Open the page from its https link in Safari.");
 </script>
 </body>
